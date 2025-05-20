@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "azalea")]
-#[command(about = "windows process memory manipulation tool", long_about = None)]
+#[command(about = "manipulate memory from your cli with ease", long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
     command: Commands,

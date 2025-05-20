@@ -1,4 +1,4 @@
-## azalea - process memory utility
+## azalea - manipulate memory from your cli with ease
 
 azalea is a command-line tool for windows to mess with process memory. you can read, write, scan, and get info about running processes.
 

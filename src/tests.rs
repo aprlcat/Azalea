@@ -2,7 +2,6 @@ use std::{
     cell::RefCell,
     fs::{self, File},
     io::{BufWriter, Write},
-    path::Path,
     process::{Child, Command},
     sync::Once,
     thread::sleep,
@@ -23,7 +22,7 @@ use winapi::{
 };
 
 use crate::{
-    cmd::{impl_, utils},
+    cmd::{impl_, util as cmd_util},
     util,
 };
 
@@ -50,8 +49,6 @@ pub fn log_test(level: &str, message: &str) {
     let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
     let log_message = format!("[{}] [{}] {}\n", timestamp, level, message);
 
-    println!("{}", log_message);
-
     LOG_FILE.with(|cell| {
         if let Some(writer) = &mut *cell.borrow_mut() {
             let _ = writer.write_all(log_message.as_bytes());
@@ -67,7 +64,7 @@ struct TestProcess {
 
 impl TestProcess {
     pub fn new_notepad() -> Self {
-        log_test("INFO", "Starting notepad.exe process");
+        log_test("INFO", "Starting notepad.exe process for testing");
         let process = Command::new("notepad.exe")
             .spawn()
             .expect("Failed to start notepad.exe");
@@ -75,7 +72,7 @@ impl TestProcess {
         let pid = process.id();
         log_test("INFO", &format!("Notepad started with PID: {}", pid));
 
-        sleep(Duration::from_millis(1000));
+        sleep(Duration::from_millis(1500));
 
         Self { process, pid }
     }
@@ -84,9 +81,10 @@ impl TestProcess {
         log_test(
             "INFO",
             &format!(
-                "Writing pattern of {} bytes to process {}",
+                "Writing pattern of {} bytes to process {} (executable: {})",
                 pattern.len(),
-                self.pid
+                self.pid,
+                executable
             ),
         );
 
@@ -95,12 +93,18 @@ impl TestProcess {
             let error = unsafe { GetLastError() };
             log_test(
                 "ERROR",
-                &format!("Failed to open process: error code {}", error),
+                &format!("Failed to open process {}: error code {}", self.pid, error),
             );
-            anyhow::bail!("Failed to open process: error code {}", error);
+            anyhow::bail!("Failed to open process {}: error code {}", self.pid, error);
         }
 
-        log_test("DEBUG", "Process opened successfully");
+        log_test(
+            "DEBUG",
+            &format!(
+                "Process {} opened successfully for writing pattern",
+                self.pid
+            ),
+        );
 
         let protection = if executable {
             PAGE_EXECUTE_READWRITE
@@ -122,14 +126,24 @@ impl TestProcess {
             unsafe { CloseHandle(handle) };
             log_test(
                 "ERROR",
-                &format!("Failed to allocate memory: error code {}", error),
+                &format!(
+                    "Failed to allocate memory in process {}: error code {}",
+                    self.pid, error
+                ),
             );
-            anyhow::bail!("Failed to allocate memory: error code {}", error);
+            anyhow::bail!(
+                "Failed to allocate memory in process {}: error code {}",
+                self.pid,
+                error
+            );
         }
 
         log_test(
             "DEBUG",
-            &format!("Memory allocated at address 0x{:X}", address),
+            &format!(
+                "Memory allocated at address 0x{:X} in process {}",
+                address, self.pid
+            ),
         );
 
         let mut bytes_written: usize = 0;
@@ -142,27 +156,39 @@ impl TestProcess {
                 &mut bytes_written,
             )
         };
+        let write_error = unsafe { GetLastError() };
 
-        if success == FALSE {
-            let error = unsafe { GetLastError() };
+        if success == FALSE || bytes_written != pattern.len() {
             unsafe { CloseHandle(handle) };
             log_test(
                 "ERROR",
-                &format!("Failed to write memory: error code {}", error),
+                &format!(
+                    "Failed to write memory to process {}: error code {}. Bytes written: {}/{}",
+                    self.pid,
+                    write_error,
+                    bytes_written,
+                    pattern.len()
+                ),
             );
-            anyhow::bail!("Failed to write memory: error code {}", error);
+            anyhow::bail!(
+                "Failed to write memory to process {}: error code {}. Bytes written: {}/{}",
+                self.pid,
+                write_error,
+                bytes_written,
+                pattern.len()
+            );
         }
 
         log_test(
             "DEBUG",
             &format!(
-                "Successfully wrote {} bytes to address 0x{:X}",
-                bytes_written, address
+                "Successfully wrote {} bytes to address 0x{:X} in process {}",
+                bytes_written, address, self.pid
             ),
         );
 
         unsafe { CloseHandle(handle) };
-        log_test("DEBUG", "Handle closed");
+        log_test("DEBUG", &format!("Handle closed for process {}", self.pid));
 
         Ok(address)
     }
@@ -174,18 +200,30 @@ impl Drop for TestProcess {
             "INFO",
             &format!("Terminating notepad process with PID: {}", self.pid),
         );
-        let _ = self.process.kill();
+        match self.process.kill() {
+            Ok(_) => log_test(
+                "INFO",
+                &format!("Process {} killed successfully.", self.pid),
+            ),
+            Err(e) => log_test(
+                "ERROR",
+                &format!("Failed to kill process {}: {}", self.pid, e),
+            ),
+        }
     }
 }
 
-fn read_process_memory(pid: u32, address: usize, size: usize) -> anyhow::Result<Vec<u8>> {
+fn read_memory_for_test(pid: u32, address: usize, size: usize) -> anyhow::Result<Vec<u8>> {
     log_test(
         "DEBUG",
         &format!(
-            "Reading {} bytes from process {} at address 0x{:X}",
+            "TEST_READ: Reading {} bytes from process {} at address 0x{:X}",
             size, pid, address
         ),
     );
+    if size == 0 {
+        return Ok(Vec::new());
+    }
 
     let handle = util::open_process(pid)?;
 
@@ -201,25 +239,35 @@ fn read_process_memory(pid: u32, address: usize, size: usize) -> anyhow::Result<
             &mut bytes_read,
         )
     };
-
+    let error_code = unsafe { GetLastError() };
     unsafe { CloseHandle(handle) };
 
     if success == FALSE {
-        let error = unsafe { GetLastError() };
         log_test(
             "ERROR",
-            &format!("Failed to read memory: error code {}", error),
+            &format!(
+                "TEST_READ: Failed to read memory: error code {}",
+                error_code
+            ),
         );
-        anyhow::bail!("Failed to read memory: error code {}", error);
+        anyhow::bail!(
+            "TEST_READ: Failed to read memory: error code {}",
+            error_code
+        );
     }
 
-    log_test("DEBUG", &format!("Successfully read {} bytes", bytes_read));
     buffer.truncate(bytes_read);
+    log_test(
+        "DEBUG",
+        &format!("TEST_READ: Successfully read {} bytes", bytes_read),
+    );
     Ok(buffer)
 }
 
 #[cfg(test)]
 mod tests {
+    use winapi::um::winnt::PAGE_GUARD;
+
     use super::*;
 
     fn setup() {
@@ -229,250 +277,177 @@ mod tests {
     #[test]
     fn process_listing() -> anyhow::Result<()> {
         setup();
-        log_test("INFO", "Starting process_listing");
-
+        log_test("INFO", "Starting test: process_listing");
         let _test_process = TestProcess::new_notepad();
-
-        log_test("INFO", "Calling list_processes");
-        impl_::memory::list_processes()?;
-
-        log_test("INFO", "process_listing completed successfully");
+        impl_::process::processes::list_processes()?;
+        log_test("INFO", "Test finished: process_listing");
         Ok(())
     }
 
     #[test]
     fn read_write_memory() -> anyhow::Result<()> {
         setup();
-        log_test("INFO", "Starting read_write_memory");
-
+        log_test("INFO", "Starting test: read_write_memory");
         let test_process = TestProcess::new_notepad();
-
         let test_pattern = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34, 0x56, 0x78];
-        log_test("DEBUG", &format!("Test pattern: {:02X?}", test_pattern));
-
         let address = test_process.write_pattern(&test_pattern, false)?;
 
-        log_test(
-            "INFO",
-            &format!("Reading memory at address 0x{:X}", address),
-        );
-        impl_::rw::read_memory(test_process.pid, address, test_pattern.len())?;
+        impl_::memory::rw::read_memory(test_process.pid, address, test_pattern.len())?;
 
-        let read_data = read_process_memory(test_process.pid, address, test_pattern.len())?;
-        log_test("DEBUG", &format!("Read data: {:02X?}", read_data));
+        let read_data = read_memory_for_test(test_process.pid, address, test_pattern.len())?;
         assert_eq!(
             read_data, test_pattern,
-            "Memory read/write verification failed"
+            "Memory read/write verification failed (initial write)"
         );
 
-        let new_pattern = vec![0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
-        log_test("DEBUG", &format!("New pattern: {:02X?}", new_pattern));
-
-        log_test(
-            "INFO",
-            &format!("Writing new pattern to address 0x{:X}", address),
+        let new_pattern = vec![0xAA, 0xBB, 0xCC, 0xDD];
+        impl_::memory::rw::write_memory(test_process.pid, address, &new_pattern)?;
+        let read_new_data = read_memory_for_test(test_process.pid, address, new_pattern.len())?;
+        assert_eq!(
+            read_new_data, new_pattern,
+            "Memory write failed (second write)"
         );
-        impl_::rw::write_memory(test_process.pid, address, &new_pattern)?;
-
-        let read_new_data = read_process_memory(test_process.pid, address, new_pattern.len())?;
-        log_test("DEBUG", &format!("Read new data: {:02X?}", read_new_data));
-        assert_eq!(read_new_data, new_pattern, "Memory write failed");
-
-        log_test("INFO", "read_write_memory completed successfully");
+        log_test("INFO", "Test finished: read_write_memory");
         Ok(())
     }
 
     #[test]
     fn pattern_scanning() -> anyhow::Result<()> {
         setup();
-        log_test("INFO", "Starting pattern_scanning");
-
+        log_test("INFO", "Starting test: pattern_scanning");
         let test_process = TestProcess::new_notepad();
-
-        let test_pattern = vec![0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x12, 0x34];
-        log_test("DEBUG", &format!("Test pattern: {:02X?}", test_pattern));
-
-        let address = test_process.write_pattern(&test_pattern, false)?;
+        let test_pattern_bytes = vec![0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x12, 0x34];
+        let address = test_process.write_pattern(&test_pattern_bytes, false)?;
         log_test(
             "INFO",
-            &format!("Pattern written to address 0x{:X}", address),
+            &format!("Pattern for scan written to 0x{:X}", address),
         );
 
-        let scan_pattern_str = "A1B2??D4E5F6??34";
-        log_test(
-            "DEBUG",
-            &format!("Scan pattern string: {}", scan_pattern_str),
-        );
-        let parsed_pattern = utils::parse_bytes(scan_pattern_str)?;
+        let scan_pattern_str = "A1 B2 ?? D4 E5 F6 ?? 34";
+        let parsed_scan_pattern = cmd_util::memory::parse_bytes(scan_pattern_str)?;
 
-        log_test("INFO", "Starting memory scan");
-        impl_::scan::scan_memory(test_process.pid, &parsed_pattern)?;
+        impl_::analysis::scan::scan_memory(test_process.pid, &parsed_scan_pattern)?;
 
-        log_test("INFO", "pattern_scanning completed successfully");
+        log_test("INFO", "Test finished: pattern_scanning");
         Ok(())
     }
 
     #[test]
-    fn disassemble() -> anyhow::Result<()> {
+    fn disassemble_code() -> anyhow::Result<()> {
         setup();
-        log_test("INFO", "Starting disassemble");
-
+        log_test("INFO", "Starting test: disassemble_code");
         let test_process = TestProcess::new_notepad();
 
         let code = vec![
-            0xC3, 0x90, 0x90, 0x90, 0x48, 0x89, 0xE5, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0x4D,
-            0x10, 0xC3,
+            0x48, 0xB8, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x90, 0xC3,
         ];
-        log_test("DEBUG", &format!("Test code sequence: {:02X?}", code));
-
-        log_test("INFO", "Writing code to executable memory");
         let address = test_process.write_pattern(&code, true)?;
-        log_test("INFO", &format!("Code written to address 0x{:X}", address));
 
-        log_test("INFO", "Starting disassembly");
-        impl_::disassemble::disassemble_memory(test_process.pid, address, 5)?;
-
-        log_test("INFO", "disassemble completed successfully");
+        impl_::analysis::disassemble::disassemble_memory(test_process.pid, address, 3)?;
+        log_test("INFO", "Test finished: disassemble_code");
         Ok(())
     }
 
     #[test]
-    fn memory_info() -> anyhow::Result<()> {
+    fn memory_information() -> anyhow::Result<()> {
         setup();
-        log_test("INFO", "Starting memory_info");
-
+        log_test("INFO", "Starting test: memory_information");
         let test_process = TestProcess::new_notepad();
-
-        log_test(
-            "INFO",
-            &format!("Getting memory info for PID {}", test_process.pid),
-        );
-        impl_::memory::display_memory_info(test_process.pid)?;
-
-        log_test("INFO", "memory_info completed successfully");
+        impl_::memory::info::display_memory_info(test_process.pid)?;
+        log_test("INFO", "Test finished: memory_information");
         Ok(())
     }
 
     #[test]
-    fn dump_and_read_region() -> anyhow::Result<()> {
+    fn dump_and_read_region_test() -> anyhow::Result<()> {
         setup();
-        log_test("INFO", "Starting dump_and_read_region");
-
+        log_test("INFO", "Starting test: dump_and_read_region_test");
         let test_process = TestProcess::new_notepad();
-
-        let test_data = vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA];
-        log_test("DEBUG", &format!("Test data: {:02X?}", test_data));
-
+        let test_data = (0..=255u8).collect::<Vec<u8>>();
         let address = test_process.write_pattern(&test_data, false)?;
-        log_test("INFO", &format!("Data written to address 0x{:X}", address));
 
-        let temp_dir = std::env::temp_dir();
-        let dump_path = temp_dir
-            .join("azalea_test_dump.bin")
-            .to_string_lossy()
-            .into_owned();
-        log_test("DEBUG", &format!("Dump file path: {}", dump_path));
+        let temp_dir = std::env::temp_dir().join("azalea_tests");
+        fs::create_dir_all(&temp_dir)?;
+        let dump_file_path = temp_dir.join("test_region_dump.bin");
+        let dump_path_str = dump_file_path.to_string_lossy().into_owned();
 
-        log_test("INFO", "Dumping memory region");
-        impl_::dump::dump_memory_region(test_process.pid, address, test_data.len(), &dump_path)?;
-
-        log_test(
-            "DEBUG",
-            &format!("Checking if dump file exists: {}", dump_path),
-        );
-        assert!(Path::new(&dump_path).exists(), "Dump file was not created");
-
-        log_test("INFO", "Reading dump file");
-        impl_::dump::read_dump(&dump_path, 0, test_data.len(), true)?;
-
-        log_test("DEBUG", "Cleaning up dump files");
-        let _ = fs::remove_file(&dump_path);
-        let _ = fs::remove_file(format!("{}.meta.json", dump_path));
-
-        log_test("INFO", "dump_and_read_region completed successfully");
-        Ok(())
-    }
-
-    #[test]
-    fn string_scanning() -> anyhow::Result<()> {
-        setup();
-        log_test("INFO", "Starting string_scanning");
-
-        let test_process = TestProcess::new_notepad();
-
-        let test_string = "meowowowo";
-        log_test("DEBUG", &format!("Test string: {}", test_string));
-
-        let address = test_process.write_pattern(test_string.as_bytes(), false)?;
-        log_test(
-            "INFO",
-            &format!("String written to address 0x{:X}", address),
-        );
-
-        log_test("INFO", "Starting string scan");
-        impl_::string::scan_for_strings(
+        impl_::memory::dump::dump_memory_region(
             test_process.pid,
-            test_string,
-            impl_::string::StringEncoding::Ascii,
+            address,
+            test_data.len(),
+            &dump_path_str,
         )?;
+        assert!(dump_file_path.exists(), "Dump file was not created");
 
-        log_test("INFO", "string_scanning completed successfully");
+        impl_::memory::dump::read_dump(&dump_path_str, 0, test_data.len(), true)?;
+
+        let _ = fs::remove_file(&dump_file_path);
+        let _ = fs::remove_file(format!("{}.meta.json", dump_path_str));
+        let _ = fs::remove_dir(&temp_dir);
+        log_test("INFO", "Test finished: dump_and_read_region_test");
         Ok(())
     }
 
     #[test]
-    fn thread_listing() -> anyhow::Result<()> {
+    fn string_scanning_ascii() -> anyhow::Result<()> {
         setup();
-        log_test("INFO", "Starting thread_listing");
-
+        log_test("INFO", "Starting test: string_scanning_ascii");
         let test_process = TestProcess::new_notepad();
-
+        let test_string_ascii = "ThisIsAnAsciiTestStringForAzalea";
+        let address_ascii = test_process.write_pattern(test_string_ascii.as_bytes(), false)?;
         log_test(
             "INFO",
-            &format!("Listing threads for PID {}", test_process.pid),
+            &format!("ASCII string for scan written to 0x{:X}", address_ascii),
         );
-        impl_::thread::list_threads(test_process.pid)?;
 
-        log_test("INFO", "thread_listing completed successfully");
+        impl_::analysis::string::scan_for_strings(
+            test_process.pid,
+            test_string_ascii,
+            impl_::analysis::string::StringEncoding::Ascii,
+        )?;
+        log_test("INFO", "Test finished: string_scanning_ascii");
         Ok(())
     }
 
     #[test]
-    fn parse_utils() -> anyhow::Result<()> {
+    fn thread_operations() -> anyhow::Result<()> {
         setup();
-        log_test("INFO", "Starting parse_utils");
+        log_test("INFO", "Starting test: thread_operations");
+        let test_process = TestProcess::new_notepad();
 
-        log_test("DEBUG", "Testing address parsing");
-        let addr = utils::parse_address("0x12345678")?;
-        assert_eq!(addr, 0x12345678, "Failed to parse hex address");
+        impl_::process::thread::list_threads(test_process.pid)?;
 
-        let addr2 = utils::parse_address("987654321")?;
-        assert_eq!(addr2, 987654321, "Failed to parse decimal address");
+        log_test("INFO", "Test finished: thread_operations (list only)");
+        Ok(())
+    }
 
-        log_test("DEBUG", "Testing byte pattern parsing");
-        let bytes = utils::parse_bytes("DEADBEEF")?;
+    #[test]
+    fn parse_cmd_utilities() -> anyhow::Result<()> {
+        setup();
+        log_test("INFO", "Starting test: parse_cmd_utilities");
+
+        let addr_hex = cmd_util::memory::parse_address("0x1A2B3C")?;
+        assert_eq!(addr_hex, 0x1A2B3C);
+        let addr_dec = cmd_util::memory::parse_address("123456")?;
+        assert_eq!(addr_dec, 123456);
+
+        let bytes_hex = cmd_util::memory::parse_bytes("0xDEADBEEF")?;
         assert_eq!(
-            bytes,
-            vec![Some(0xDE), Some(0xAD), Some(0xBE), Some(0xEF)],
-            "Failed to parse hex bytes"
+            bytes_hex,
+            vec![Some(0xDE), Some(0xAD), Some(0xBE), Some(0xEF)]
+        );
+        let bytes_wild = cmd_util::memory::parse_bytes("AA??CCDD")?;
+        assert_eq!(bytes_wild, vec![Some(0xAA), None, Some(0xCC), Some(0xDD)]);
+        let bytes_str = cmd_util::memory::parse_bytes("test")?;
+        assert_eq!(
+            bytes_str,
+            vec![Some(b't'), Some(b'e'), Some(b's'), Some(b't')]
         );
 
-        let bytes_with_wildcards = utils::parse_bytes("AA??CC")?;
-        assert_eq!(
-            bytes_with_wildcards,
-            vec![Some(0xAA), None, Some(0xCC)],
-            "Failed to parse pattern with wildcards"
-        );
+        let prot_flags = cmd_util::memory::parse_protection_flags("RWX|GUARD")?;
+        assert_eq!(prot_flags, PAGE_EXECUTE_READWRITE | PAGE_GUARD);
 
-        log_test("DEBUG", "Testing protection flag parsing");
-        let flags = utils::parse_protection_flags("RWX")?;
-        assert_eq!(
-            flags,
-            winapi::um::winnt::PAGE_EXECUTE_READWRITE,
-            "Failed to parse protection flags"
-        );
-
-        log_test("INFO", "parse_utils completed successfully");
+        log_test("INFO", "Test finished: parse_cmd_utilities");
         Ok(())
     }
 }

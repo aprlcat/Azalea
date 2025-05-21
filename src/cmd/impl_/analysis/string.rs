@@ -27,6 +27,11 @@ pub fn scan_for_strings(
         encoding, search_string, pid
     ));
 
+    if search_string.is_empty() {
+        unsafe { winapi::um::handleapi::CloseHandle(handle) };
+        anyhow::bail!("search string cannot be empty");
+    }
+
     let mut mem_info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
     let mut current_base_address: usize = 0;
     let mut found_count = 0;
@@ -39,10 +44,6 @@ pub fn scan_for_strings(
                 (None, Some(utf16_str))
             }
         };
-
-    if search_string.is_empty() {
-        anyhow::bail!("search string cannot be empty");
-    }
 
     while unsafe {
         VirtualQueryEx(
@@ -78,9 +79,6 @@ pub fn scan_for_strings(
                 match encoding {
                     StringEncoding::Ascii => {
                         if let Some(ref s_bytes) = search_bytes_ascii {
-                            if s_bytes.is_empty() {
-                                continue;
-                            }
                             for (i, window) in valid_buffer.windows(s_bytes.len()).enumerate() {
                                 if window == s_bytes.as_slice() {
                                     let match_address = mem_info.BaseAddress as usize + i;
@@ -96,9 +94,6 @@ pub fn scan_for_strings(
                     }
                     StringEncoding::Utf16LE => {
                         if let Some(ref s_utf16) = search_bytes_utf16 {
-                            if s_utf16.is_empty() {
-                                continue;
-                            }
                             if valid_buffer.len() < s_utf16.len() * 2 {
                                 continue;
                             }
@@ -107,6 +102,11 @@ pub fn scan_for_strings(
                                 let mut match_found = true;
                                 for j in 0..s_utf16.len() {
                                     let buf_idx = i + j * 2;
+
+                                    if buf_idx + 1 >= valid_buffer.len() {
+                                        match_found = false;
+                                        break;
+                                    }
                                     let char_from_buf = u16::from_le_bytes([
                                         valid_buffer[buf_idx],
                                         valid_buffer[buf_idx + 1],

@@ -6,7 +6,7 @@ use winapi::{
     },
 };
 
-use crate::{cmd::utils, util, util::log};
+use crate::{cmd::util as cmd_util, util, util::log};
 
 pub fn set_protection(
     pid: u32,
@@ -22,7 +22,11 @@ pub fn set_protection(
         pid
     ));
 
-    let protection_flags = utils::parse_protection_flags(protection_flags_str)?;
+    if size == 0 {
+        anyhow::bail!("size for memory protection change cannot be zero.");
+    }
+
+    let protection_flags = cmd_util::memory::parse_protection_flags(protection_flags_str)?;
 
     let process_handle = unsafe { OpenProcess(PROCESS_VM_OPERATION, 0, pid) };
     if process_handle.is_null() {
@@ -44,21 +48,30 @@ pub fn set_protection(
         )
     };
 
+    let last_error = unsafe { winapi::um::errhandlingapi::GetLastError() };
     unsafe { CloseHandle(process_handle) };
 
     if success == 0 {
         anyhow::bail!(
             "failed to set memory protection at {}: error code {}",
             util::format_address(address),
-            unsafe { winapi::um::errhandlingapi::GetLastError() }
+            last_error
         );
     }
 
     log::info(&format!(
-        "memory protection set successfully at {}. old protection: 0x{:X}",
+        "memory protection set successfully at {}. Old protection: 0x{:X} ({})",
         util::format_address(address),
-        old_protection
+        old_protection,
+        cmd_util::memory::parse_protection_flags(&format!("0x{:X}", old_protection)).map_or_else(
+            |_| "unknown".to_string(),
+            |f| format_protection_flags_to_string(f)
+        )
     ));
 
     Ok(())
+}
+
+fn format_protection_flags_to_string(protection: DWORD) -> String {
+    format!("0x{:X}", protection)
 }

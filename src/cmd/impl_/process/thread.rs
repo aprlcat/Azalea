@@ -35,7 +35,7 @@ pub fn list_threads(pid: u32) -> anyhow::Result<()> {
         dwFlags: 0,
     };
 
-    println!("tid\towner pid\tbase priority");
+    println!("TID\tOwner PID\tBase Priority");
     println!("---\t---------\t-------------");
 
     let mut success = unsafe { Thread32First(snapshot_handle, &mut thread_entry) };
@@ -72,7 +72,16 @@ pub fn suspend_thread_by_pid_tid(pid: u32, tid: u32) -> anyhow::Result<()> {
     }
 
     let owner_pid_of_thread = unsafe { GetProcessIdOfThread(thread_handle) };
-    if owner_pid_of_thread == 0 || owner_pid_of_thread != pid {
+    if owner_pid_of_thread == 0 {
+        let err_code = unsafe { GetLastError() };
+        unsafe { CloseHandle(thread_handle) };
+        anyhow::bail!(
+            "failed to get owner PID for thread {}: error code {}",
+            tid,
+            err_code
+        );
+    }
+    if owner_pid_of_thread != pid {
         unsafe { CloseHandle(thread_handle) };
         anyhow::bail!(
             "thread {} does not belong to PID {} (belongs to PID {})",
@@ -113,7 +122,16 @@ pub fn resume_thread_by_pid_tid(pid: u32, tid: u32) -> anyhow::Result<()> {
     }
 
     let owner_pid_of_thread = unsafe { GetProcessIdOfThread(thread_handle) };
-    if owner_pid_of_thread == 0 || owner_pid_of_thread != pid {
+    if owner_pid_of_thread == 0 {
+        let err_code = unsafe { GetLastError() };
+        unsafe { CloseHandle(thread_handle) };
+        anyhow::bail!(
+            "failed to get owner PID for thread {}: error code {}",
+            tid,
+            err_code
+        );
+    }
+    if owner_pid_of_thread != pid {
         unsafe { CloseHandle(thread_handle) };
         anyhow::bail!(
             "thread {} does not belong to PID {} (belongs to PID {})",

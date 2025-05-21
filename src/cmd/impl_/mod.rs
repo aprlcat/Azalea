@@ -1,10 +1,4 @@
-pub mod disassemble;
-pub mod dump;
-pub mod inject;
+pub mod analysis;
 pub mod memory;
-pub mod pointer;
-pub mod prot;
-pub mod rw;
-pub mod scan;
-pub mod string;
-pub mod thread;
+pub mod patching;
+pub mod process;

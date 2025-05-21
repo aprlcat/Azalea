@@ -26,13 +26,15 @@ pub fn disassemble_memory(
 
     if success == 0 {
         anyhow::bail!(
-            "failed to read memory at address {}",
-            util::format_address(address)
+            "failed to read memory at address {}: error code {}",
+            util::format_address(address),
+            unsafe { winapi::um::errhandlingapi::GetLastError() }
         );
     }
 
     if bytes_read == 0 {
         log::error("no bytes read from memory");
+        unsafe { winapi::um::handleapi::CloseHandle(handle) };
         return Ok(());
     }
 
@@ -65,5 +67,6 @@ pub fn disassemble_memory(
         "disassembled {} instructions",
         instructions_decoded
     ));
+    unsafe { winapi::um::handleapi::CloseHandle(handle) };
     Ok(())
 }

@@ -100,8 +100,10 @@ pub fn inject_dll(pid: u32, dll_path: &str) -> anyhow::Result<()> {
         );
     }
 
+    let load_library_name = "LoadLibraryW\0";
     let load_library_addr =
-        unsafe { GetProcAddress(kernel32_handle, "LoadLibraryW\0".as_ptr() as *const i8) };
+        unsafe { GetProcAddress(kernel32_handle, load_library_name.as_ptr() as *const i8) };
+
     if load_library_addr.is_null() {
         unsafe {
             VirtualFreeEx(process_handle, remote_memory, 0, MEM_RELEASE);
@@ -148,7 +150,14 @@ pub fn inject_dll(pid: u32, dll_path: &str) -> anyhow::Result<()> {
 
     let mut exit_code: u32 = 0;
     unsafe {
-        winapi::um::processthreadsapi::GetExitCodeThread(remote_thread_handle, &mut exit_code);
+        if winapi::um::processthreadsapi::GetExitCodeThread(remote_thread_handle, &mut exit_code)
+            == 0
+        {
+            log::warn(&format!(
+                "Failed to get exit code of remote thread: error code {}",
+                winapi::um::errhandlingapi::GetLastError()
+            ));
+        }
     }
 
     unsafe {

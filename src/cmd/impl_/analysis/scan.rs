@@ -57,11 +57,12 @@ pub fn scan_memory(pid: u32, pattern: &[Option<u8>]) -> anyhow::Result<()> {
                 || mbi.Protect == PAGE_EXECUTE_READ
                 || mbi.Protect == PAGE_EXECUTE_READWRITE)
             && mbi.RegionSize > 0
+            && !pattern.is_empty()
         {
             if regions_scanned % 10 == 0 {
                 print!("\rprogress: [");
-                let progress = (regions_scanned % (progress_bar_width * 2)) * progress_bar_width
-                    / (progress_bar_width * 2);
+
+                let progress = regions_scanned / 10 % progress_bar_width;
                 for i in 0..progress_bar_width {
                     if i < progress {
                         print!("#");
@@ -126,23 +127,22 @@ pub fn scan_memory(pid: u32, pattern: &[Option<u8>]) -> anyhow::Result<()> {
                             print!("  context: ");
                             for k in start_context..end_context {
                                 if k >= i && k < i + pattern.len() && pattern[k - i].is_some() {
-                                    print!("[{:02x}] ", buffer[k]);
+                                    print!("\x1B[32m{:02x}\x1B[0m ", buffer[k]);
                                 } else if k >= i
                                     && k < i + pattern.len()
                                     && pattern[k - i].is_none()
                                 {
-                                    print!("[??={:02x}] ", buffer[k]);
+                                    print!("\x1B[33m{:02x}\x1B[0m ", buffer[k]);
                                 } else {
                                     print!("{:02x} ", buffer[k]);
                                 }
                             }
                             println!();
                         }
-                        if regions_scanned % 10 != 0 && matches > 0 {
+
+                        if regions_scanned % 10 == 0 {
                             print!("\rprogress: [");
-                            let progress = (regions_scanned % (progress_bar_width * 2))
-                                * progress_bar_width
-                                / (progress_bar_width * 2);
+                            let progress = regions_scanned / 10 % progress_bar_width;
                             for idx in 0..progress_bar_width {
                                 if idx < progress {
                                     print!("#");
@@ -168,7 +168,7 @@ pub fn scan_memory(pid: u32, pattern: &[Option<u8>]) -> anyhow::Result<()> {
     for _ in 0..line_clear_width {
         print!(" ");
     }
-    println!();
+    println!("\r");
     let _ = stdout().flush();
 
     log::info(&format!("scan complete. found {} matches.", matches));

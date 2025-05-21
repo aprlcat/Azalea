@@ -24,6 +24,7 @@ pub fn scan_for_pointers(
     ));
 
     if max_levels == 0 {
+        unsafe { winapi::um::handleapi::CloseHandle(handle) };
         anyhow::bail!("max_levels must be at least 1");
     }
 
@@ -130,12 +131,8 @@ fn find_pointers_recursive(
 
                         if current_level == max_levels - 1 {
                             let mut final_chain_to_display = new_path_addrs.clone();
-                            if potential_pointer_value == original_target_address || max_levels == 1
-                            {
-                                final_chain_to_display.push(original_target_address);
-                            } else {
-                                final_chain_to_display.push(potential_pointer_value);
-                            }
+
+                            final_chain_to_display.push(potential_pointer_value);
                             found_pointer_chains.push(final_chain_to_display);
                         } else {
                             find_pointers_recursive(

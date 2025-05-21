@@ -1,4 +1,6 @@
 mod cmd;
+#[cfg(test)]
+mod tests;
 mod util;
 
 use cmd::CommandDispatcher;

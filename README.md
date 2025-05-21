@@ -165,3 +165,9 @@ all commands start with `azalea.exe <command_name> [options...]`
 
   * run as admin if you're targeting protected processes or need higher privileges for certain operations.
   * messing with memory can crash processes. save your work\!
+
+### contributors
+
+if you plan to contribute:
+ * you will need to install the nightly toolchain, primarily for cargo +nightly fmt
+ * make sure your format before you make a pr please
